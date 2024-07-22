@@ -411,15 +411,42 @@ func createStoreAndDomain(keyspaceName string) (kv.Storage, *domain.Domain) {
 	} else {
 		fullPath = fmt.Sprintf("%s://%s?keyspaceName=%s", cfg.Store, cfg.Path, keyspaceName)
 	}
-	var err error
-	storage, err := kvstore.New(fullPath)
-	terror.MustNil(err)
 	copr.GlobalMPPFailedStoreProber.Run()
 	mppcoordmanager.InstanceMPPCoordinatorManager.Run()
+	// var err error
+	var fullPath2 string = "tikv://127.0.0.1:3451?disableGC=true"
+
+	var paths = []string{fullPath, fullPath2}
+	// storage, err := kvstore.New(fullPath)
+	// var err2 error
+	// storage2, err2 := kvstore.New(fullPath2)
+	// terror.MustNil(err)
+	// terror.MustNil(err2)
+	// if storage2 == nil {
+	// 	log.Fatal("store is nil")
+	// }
+	storage3, err3 := kvstore.NewMultiStorage(paths)
+	// terror.MustNil(err3)
+	// if storage3 == nil {
+	// 	log.Fatal("store3 is nil")
+	// }
+	// TODO: rinozemt disabling some of the background jobs for now.
+	// copr.GlobalMPPFailedStoreProber.Run()
+	// mppcoordmanager.InstanceMPPCoordinatorManager.Run()
 	// Bootstrap a session to load information schema.
-	dom, err := session.BootstrapSession(storage)
-	terror.MustNil(err)
-	return storage, dom
+	// dom, err := session.BootstrapSession(storage)
+	// dom2, err2 := session.BootstrapSession(storage2)
+	dom3, err3 := session.BootstrapSession(storage3)
+	// terror.MustNil(err)
+	// terror.MustNil(err2)
+	terror.MustNil(err3)
+	// if dom2 == nil {
+	// 	log.Fatal("domain2 is nil")
+	// }
+	if dom3 == nil {
+		log.Fatal("domain3 is nil")
+	}
+	return storage3, dom3
 }
 
 func setupBinlogClient() {

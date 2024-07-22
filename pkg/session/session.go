@@ -2003,6 +2003,8 @@ func (s *session) ExecuteInternalStmt(ctx context.Context, stmtNode ast.StmtNode
 }
 
 func (s *session) ExecuteStmt(ctx context.Context, stmtNode ast.StmtNode) (sqlexec.RecordSet, error) {
+	//logutil.GeneralLogger.Info("====Executing statement !!!!===")
+
 	r, ctx := tracing.StartRegionEx(ctx, "session.ExecuteStmt")
 	defer r.End()
 
@@ -2147,6 +2149,7 @@ func (s *session) ExecuteStmt(ctx context.Context, stmtNode ast.StmtNode) (sqlex
 		recordSet, err = stmt.PointGet(ctx)
 		s.txn.changeToInvalid()
 	} else {
+		//logutil.GeneralLogger.Info("====Executing statement !!!!===")
 		recordSet, err = runStmt(ctx, s, stmt)
 	}
 
@@ -3386,6 +3389,7 @@ func bootstrapSessionImpl(store kv.Storage, createSessionsImpl func(store kv.Sto
 			return nil, err
 		}
 	}
+	// ignoring ddl jobs for now. they will use storage/client at index 0
 	err := InitDDLJobTables(store, meta.BaseDDLTableVersion)
 	if err != nil {
 		return nil, err
@@ -3410,7 +3414,7 @@ func bootstrapSessionImpl(store kv.Storage, createSessionsImpl func(store kv.Sto
 		}
 	}
 
-	// initiate disttask framework components which need a store
+	// // initiate disttask framework components which need a store
 	scheduler.RegisterSchedulerFactory(
 		proto.ImportInto,
 		func(ctx context.Context, task *proto.Task, param scheduler.Param) scheduler.Scheduler {
@@ -3993,6 +3997,10 @@ func logStmt(execStmt *executor.ExecStmt, s *session) {
 		isCrucial = true
 		if stmt.IndexOption != nil && stmt.IndexOption.Tp == model.IndexTypeHypo {
 			isCrucial = false
+		}
+	case *ast.SelectStmt:
+		if vars.User != nil {
+			isCrucial = true
 		}
 	case *ast.CreateUserStmt, *ast.DropUserStmt, *ast.AlterUserStmt, *ast.SetPwdStmt, *ast.GrantStmt,
 		*ast.RevokeStmt, *ast.AlterTableStmt, *ast.CreateDatabaseStmt, *ast.CreateTableStmt,

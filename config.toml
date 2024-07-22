@@ -1,0 +1,32 @@
+# TiDB server port.
+port = 4001
+
+
+store = "tikv"
+
+# against local TIUP
+# path = "127.0.0.1:2379,127.0.0.1:2382"
+
+# trying to add 2 unrelated PDs
+path = "127.0.0.1:2379?disableGC=true"
+
+#127.0.0.1:3451
+
+#path = "127.0.0.1:1233"
+
+#path = "pd.dev-1.pd-runner.ei4.atd.disco.linkedin.com:19165"
+[status]
+status-port = 10081
+
+[log]
+level = "info"
+
+
+
+# EI
+#path = "pd.dev-1.pd-runner.ei4.atd.disco.linkedin.com:19165"
+#[security]
+#cluster-ssl-cert = "identity.cert"
+#cluster-ssl-key = "identity.key"
+#cluster-ssl-ca = "ca-bundle.crt"
+#ssl-cert-skip-verify = true
