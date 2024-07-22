@@ -416,6 +416,7 @@ func createStoreAndDomain(keyspaceName string) (kv.Storage, *domain.Domain) {
 
 	var err error
 	storage, err := kvstore.NewMultiStorage(paths)
+	terror.MustNil(err)
 	copr.GlobalMPPFailedStoreProber.Run()
 	mppcoordmanager.InstanceMPPCoordinatorManager.Run()
 	// Bootstrap a session to load information schema.
