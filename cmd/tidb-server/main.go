@@ -404,7 +404,6 @@ func registerStores() {
 }
 
 func createStoreAndDomain(keyspaceName string) (kv.Storage, *domain.Domain) {
-	var fullPath2 string = "tikv://127.0.0.1:3451?disableGC=true"
 	cfg := config.GetGlobalConfig()
 	var fullPath string
 	if keyspaceName == "" {
@@ -412,16 +411,16 @@ func createStoreAndDomain(keyspaceName string) (kv.Storage, *domain.Domain) {
 	} else {
 		fullPath = fmt.Sprintf("%s://%s?keyspaceName=%s", cfg.Store, cfg.Path, keyspaceName)
 	}
+	var fullPath2 string = "tikv://127.0.0.1:3451?disableGC=true"
+	var paths = []string{fullPath, fullPath2}
 
 	var err error
-	var paths = []string{fullPath, fullPath2}
 	storage, err := kvstore.NewMultiStorage(paths)
 	copr.GlobalMPPFailedStoreProber.Run()
 	mppcoordmanager.InstanceMPPCoordinatorManager.Run()
-
+	// Bootstrap a session to load information schema.
 	dom, err := session.BootstrapSession(storage)
 	terror.MustNil(err)
-
 	return storage, dom
 }
 
