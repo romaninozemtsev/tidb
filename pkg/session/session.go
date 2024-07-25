@@ -2033,6 +2033,7 @@ func (s *session) ExecuteStmt(ctx context.Context, stmtNode ast.StmtNode) (sqlex
 	}
 
 	normalizedSQL, digest := s.sessionVars.StmtCtx.SQLDigest()
+	ctx = context.WithValue(ctx, "__normalizedSQL", normalizedSQL)
 	cmdByte := byte(atomic.LoadUint32(&s.GetSessionVars().CommandValue))
 	if topsqlstate.TopSQLEnabled() {
 		s.sessionVars.StmtCtx.IsSQLRegistered.Store(true)
@@ -3987,6 +3988,11 @@ func GetStartTSFromSession(se any) (startTS, processInfoID uint64) {
 func logStmt(execStmt *executor.ExecStmt, s *session) {
 	vars := s.GetSessionVars()
 	isCrucial := false
+	var rawSql = execStmt.OriginText()
+	//if (strings.Contains("tidb_background_subtask", rawSql) || strings.Contains("tidb_background_subtask_history", rawSql)) && !vars.InRestrictedSQL {
+	if !vars.InRestrictedSQL {
+		logutil.BgLogger().Info("exec statement", zap.String("sql", rawSql))
+	}
 	switch stmt := execStmt.StmtNode.(type) {
 	case *ast.DropIndexStmt:
 		isCrucial = true

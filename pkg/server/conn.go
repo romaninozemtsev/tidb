@@ -1783,6 +1783,7 @@ func (cc *clientConn) handleQuery(ctx context.Context, sql string) (err error) {
 	var retryable bool
 	var lastStmt ast.StmtNode
 	var expiredStmtTaskID uint64
+	ctx = context.WithValue(ctx, "__SQL2", sql)
 	for i, stmt := range stmts {
 		if lastStmt != nil {
 			cc.onExtensionStmtEnd(lastStmt, true, nil)

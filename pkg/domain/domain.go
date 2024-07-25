@@ -68,6 +68,7 @@ import (
 	"github.com/pingcap/tidb/pkg/sessionctx/variable"
 	"github.com/pingcap/tidb/pkg/statistics/handle"
 	statslogutil "github.com/pingcap/tidb/pkg/statistics/handle/logutil"
+	"github.com/pingcap/tidb/pkg/store"
 	"github.com/pingcap/tidb/pkg/store/helper"
 	"github.com/pingcap/tidb/pkg/ttl/ttlworker"
 	"github.com/pingcap/tidb/pkg/types"
@@ -267,6 +268,41 @@ func (do *Domain) EtcdClient() *clientv3.Client {
 // 3. currentSchemaVersion(before loading)
 // 4. the changed table IDs if it is not full load
 // 5. an error if any
+func (do *Domain) loadInfoSchemaNew(startTS uint64) (infoschema.InfoSchema, bool, int64, *transaction.RelatedSchemaChange, error) {
+	beginTime := time.Now()
+	defer func() {
+		infoschema_metrics.LoadSchemaDurationTotal.Observe(time.Since(beginTime).Seconds())
+	}()
+
+	// rinozemt: we use snapshot from the first store to fetch timestamp. otherwise we actually fetch info schema from each store.
+
+	snapshot := do.store.GetSnapshot(kv.NewVersion(startTS))
+	// Using the KV timeout read feature to address the issue of potential DDL lease expiration when
+	// the meta region leader is slow.
+	snapshot.SetOption(kv.TiKVClientReadTimeout, uint64(3000)) // 3000ms.
+	m := meta.NewSnapshotMeta(snapshot)
+
+	neededSchemaVersion, err := m.GetSchemaVersionWithNonEmptyDiff()
+	if err != nil {
+		return nil, false, 0, nil, err
+	}
+	// fetch the commit timestamp of the schema diff
+	schemaTs, err := do.getTimestampForSchemaVersionWithNonEmptyDiff(m, neededSchemaVersion, startTS)
+
+	is, hitCache, currentSchemaVersion, changes, err := do.loadInfoSchemaForStore(startTS, do.store)
+	if err != nil {
+		do.infoCache.Insert(is, schemaTs)
+	}
+	return is, hitCache, currentSchemaVersion, changes, err
+}
+
+// loadInfoSchema loads infoschema at startTS.
+// It returns:
+// 1. the needed infoschema
+// 2. cache hit indicator
+// 3. currentSchemaVersion(before loading)
+// 4. the changed table IDs if it is not full load
+// 5. an error if any
 func (do *Domain) loadInfoSchema(startTS uint64) (infoschema.InfoSchema, bool, int64, *transaction.RelatedSchemaChange, error) {
 	beginTime := time.Now()
 	defer func() {
@@ -277,6 +313,18 @@ func (do *Domain) loadInfoSchema(startTS uint64) (infoschema.InfoSchema, bool, i
 	// the meta region leader is slow.
 	snapshot.SetOption(kv.TiKVClientReadTimeout, uint64(3000)) // 3000ms.
 	m := meta.NewSnapshotMeta(snapshot)
+
+	// if do.store is instance of MultiStorage, then we'll take second store to fetch timestamp.
+
+	var m2 *meta.Meta
+	if multiStore, ok := do.store.(*store.MultiStorage); ok {
+		storages := multiStore.GetStorages()
+		s2 := storages[1]
+		snapshot2 := s2.GetSnapshot(kv.NewVersion(startTS))
+		snapshot2.SetOption(kv.TiKVClientReadTimeout, uint64(3000)) // 3000ms.
+		m2 = meta.NewSnapshotMeta(snapshot2)
+	}
+
 	neededSchemaVersion, err := m.GetSchemaVersionWithNonEmptyDiff()
 	if err != nil {
 		return nil, false, 0, nil, err
@@ -346,10 +394,23 @@ func (do *Domain) loadInfoSchema(startTS uint64) (infoschema.InfoSchema, bool, i
 		logutil.BgLogger().Error("failed to load schema diff", zap.Error(err))
 	}
 	// full load.
-	schemas, err := do.fetchAllSchemasWithTables(m)
+	schemas1, err := do.fetchAllSchemasWithTables(m)
 	if err != nil {
 		return nil, false, currentSchemaVersion, nil, err
 	}
+	schemas2, err2 := do.fetchAllSchemasWithTables(m2)
+	if err2 != nil {
+		return nil, false, currentSchemaVersion, nil, err2
+	}
+	if schemas2 != nil {
+		logutil.BgLogger().Info("===> fetched schemas from second store", zap.Int("count", len(schemas2)))
+	}
+	if schemas1 != nil {
+		logutil.BgLogger().Info("===> fetched schemas from first store", zap.Int("count", len(schemas1)))
+	}
+
+	// if that doesn't work, we'll just do schemas := schemas1
+	schemas := combineDBInfos(schemas1, schemas2)
 
 	policies, err := do.fetchPolicies(m)
 	if err != nil {
@@ -381,6 +442,131 @@ func (do *Domain) loadInfoSchema(startTS uint64) (infoschema.InfoSchema, bool, i
 	} else {
 		do.infoCache.Insert(is, schemaTs)
 	}
+	return is, false, currentSchemaVersion, nil, nil
+}
+
+// loadInfoSchema loads infoschema at startTS.
+// It returns:
+// 1. the needed infoschema
+// 2. cache hit indicator
+// 3. currentSchemaVersion(before loading)
+// 4. the changed table IDs if it is not full load
+// 5. an error if any
+func (do *Domain) loadInfoSchemaForStore(startTS uint64, store kv.Storage) (infoschema.InfoSchema, bool, int64, *transaction.RelatedSchemaChange, error) {
+	// beginTime := time.Now()
+	// defer func() {
+	// 	infoschema_metrics.LoadSchemaDurationTotal.Observe(time.Since(beginTime).Seconds())
+	// }()
+	snapshot := store.GetSnapshot(kv.NewVersion(startTS))
+	// Using the KV timeout read feature to address the issue of potential DDL lease expiration when
+	// the meta region leader is slow.
+	snapshot.SetOption(kv.TiKVClientReadTimeout, uint64(3000)) // 3000ms.
+	m := meta.NewSnapshotMeta(snapshot)
+
+	neededSchemaVersion, err := m.GetSchemaVersionWithNonEmptyDiff()
+	if err != nil {
+		return nil, false, 0, nil, err
+	}
+	// fetch the commit timestamp of the schema diff
+	schemaTs, err := do.getTimestampForSchemaVersionWithNonEmptyDiff(m, neededSchemaVersion, startTS)
+	if err != nil {
+		logutil.BgLogger().Warn("failed to get schema version", zap.Error(err), zap.Int64("version", neededSchemaVersion))
+		schemaTs = 0
+	}
+
+	enableV2 := variable.SchemaCacheSize.Load() > 0
+	if is := do.infoCache.GetByVersion(neededSchemaVersion); is != nil {
+		isV2, raw := infoschema.IsV2(is)
+		if isV2 {
+			// Copy the infoschema V2 instance and update its ts.
+			// For example, the DDL run 30 minutes ago, GC happened 10 minutes ago. If we use
+			// that infoschema it would get error "GC life time is shorter than transaction
+			// duration" when visiting TiKV.
+			// So we keep updating the ts of the infoschema v2.
+			is = raw.CloneAndUpdateTS(startTS)
+		}
+
+		// try to insert here as well to correct the schemaTs if previous is wrong
+		// the insert method check if schemaTs is zero
+		//do.infoCache.Insert(is, schemaTs)
+
+		if enableV2 == isV2 {
+			return is, true, 0, nil, nil
+		}
+	}
+
+	//var isV1V2Switch bool
+	currentSchemaVersion := int64(0)
+	if oldInfoSchema := do.infoCache.GetLatest(); oldInfoSchema != nil {
+		currentSchemaVersion = oldInfoSchema.SchemaMetaVersion()
+		//isV2, _ := infoschema.IsV2(oldInfoSchema)
+		//isV1V2Switch = enableV2 != isV2
+	}
+
+	// TODO: tryLoadSchemaDiffs has potential risks of failure. And it becomes worse in history reading cases.
+	// It is only kept because there is no alternative diff/partial loading solution.
+	// And it is only used to diff upgrading the current latest infoschema, if:
+	// 1. Not first time bootstrap loading, which needs a full load.
+	// 2. It is newer than the current one, so it will be "the current one" after this function call.
+	// 3. There are less 100 diffs.
+	// 4. No regenerated schema diff.
+	startTime := time.Now()
+	if currentSchemaVersion != 0 && neededSchemaVersion > currentSchemaVersion && neededSchemaVersion-currentSchemaVersion < LoadSchemaDiffVersionGapThreshold {
+		is, relatedChanges, diffTypes, err := do.tryLoadSchemaDiffs(m, currentSchemaVersion, neededSchemaVersion, startTS)
+		if err == nil {
+			infoschema_metrics.LoadSchemaDurationLoadDiff.Observe(time.Since(startTime).Seconds())
+			isV2, _ := infoschema.IsV2(is)
+			do.infoCache.Insert(is, schemaTs)
+			logutil.BgLogger().Info("diff load InfoSchema success",
+				zap.Bool("isV2", isV2),
+				zap.Int64("currentSchemaVersion", currentSchemaVersion),
+				zap.Int64("neededSchemaVersion", neededSchemaVersion),
+				zap.Duration("elapsed time", time.Since(startTime)),
+				zap.Int64("gotSchemaVersion", is.SchemaMetaVersion()),
+				zap.Int64s("phyTblIDs", relatedChanges.PhyTblIDS),
+				zap.Uint64s("actionTypes", relatedChanges.ActionTypes),
+				zap.Strings("diffTypes", diffTypes))
+			return is, false, currentSchemaVersion, relatedChanges, nil
+		}
+		// We can fall back to full load, don't need to return the error.
+		logutil.BgLogger().Error("failed to load schema diff", zap.Error(err))
+	}
+	// full load.
+	schemas, err := do.fetchAllSchemasWithTables(m)
+	if err != nil {
+		return nil, false, currentSchemaVersion, nil, err
+	}
+
+	policies, err := do.fetchPolicies(m)
+	if err != nil {
+		return nil, false, currentSchemaVersion, nil, err
+	}
+
+	resourceGroups, err := do.fetchResourceGroups(m)
+	if err != nil {
+		return nil, false, currentSchemaVersion, nil, err
+	}
+	infoschema_metrics.LoadSchemaDurationLoadAll.Observe(time.Since(startTime).Seconds())
+
+	newISBuilder, err := infoschema.NewBuilder(do, do.sysFacHack, do.infoCache.Data).InitWithDBInfos(schemas, policies, resourceGroups, neededSchemaVersion)
+	if err != nil {
+		return nil, false, currentSchemaVersion, nil, err
+	}
+	is := newISBuilder.Build(startTS)
+	isV2, _ := infoschema.IsV2(is)
+	logutil.BgLogger().Info("full load InfoSchema success",
+		zap.Bool("isV2", isV2),
+		zap.Int64("currentSchemaVersion", currentSchemaVersion),
+		zap.Int64("neededSchemaVersion", neededSchemaVersion),
+		zap.Duration("elapsed time", time.Since(startTime)))
+
+	// if isV1V2Switch && schemaTs > 0 {
+	// 	// Reset the whole info cache to avoid co-existing of both v1 and v2, causing the memory usage doubled.
+	// 	fn := do.infoCache.Upsert(is, schemaTs)
+	// 	do.deferFn.add(fn, time.Now().Add(10*time.Minute))
+	// } else {
+	// 	do.infoCache.Insert(is, schemaTs)
+	// }
 	return is, false, currentSchemaVersion, nil, nil
 }
 
@@ -467,6 +653,26 @@ func (*Domain) splitForConcurrentFetch(schemas []*model.DBInfo) [][]*model.DBInf
 		splitted = append(splitted, schemas[i:end])
 	}
 	return splitted
+}
+
+func combineDBInfos(store1, store2 []*model.DBInfo) []*model.DBInfo {
+	nameMap := make(map[string]bool)
+	store3 := make([]*model.DBInfo, 0)
+
+	// Add all elements from store1 to store3 and populate the nameMap
+	for _, dbInfo := range store1 {
+		store3 = append(store3, dbInfo)
+		nameMap[dbInfo.Name.L] = true
+	}
+
+	// Add elements from store2 to store3 only if the name is not in nameMap
+	for _, dbInfo := range store2 {
+		if !nameMap[dbInfo.Name.L] {
+			store3 = append(store3, dbInfo)
+		}
+	}
+
+	return store3
 }
 
 func (*Domain) fetchSchemasWithTables(schemas []*model.DBInfo, m *meta.Meta, done chan error) {
@@ -1382,11 +1588,11 @@ func (do *Domain) Init(
 		do.loadSchemaInLoop(ctx, ddlLease)
 	}, "loadSchemaInLoop")
 	do.wg.Run(do.mdlCheckLoop, "mdlCheckLoop")
-	do.wg.Run(do.topNSlowQueryLoop, "topNSlowQueryLoop")
+	//do.wg.Run(do.topNSlowQueryLoop, "topNSlowQueryLoop")
 	do.wg.Run(do.infoSyncerKeeper, "infoSyncerKeeper")
 	do.wg.Run(do.globalConfigSyncerKeeper, "globalConfigSyncerKeeper")
-	do.wg.Run(do.runawayStartLoop, "runawayStartLoop")
-	do.wg.Run(do.requestUnitsWriterLoop, "requestUnitsWriterLoop")
+	//do.wg.Run(do.runawayStartLoop, "runawayStartLoop")
+	//do.wg.Run(do.requestUnitsWriterLoop, "requestUnitsWriterLoop")
 	if !skipRegisterToDashboard {
 		do.wg.Run(do.topologySyncerKeeper, "topologySyncerKeeper")
 	}

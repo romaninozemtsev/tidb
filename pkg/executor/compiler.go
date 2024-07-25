@@ -98,6 +98,7 @@ func (c *Compiler) Compile(ctx context.Context, stmtNode ast.StmtNode) (_ *ExecS
 	// Build the final physical plan.
 	finalPlan, names, err := planner.Optimize(ctx, c.Ctx, stmtNode, is)
 	if err != nil {
+		logutil.Logger(ctx).Error("compile SQL", zap.String("SQL", stmtNode.Text()), zap.Error(err))
 		return nil, err
 	}
 

@@ -900,3 +900,19 @@ func getTableInfoList(tables []table.Table) []*model.TableInfo {
 	}
 	return infoLost
 }
+
+func mergeInfoSchemas(schema1, schema2 infoSchema) InfoSchema {
+	result := newInfoSchema()
+	for _, v := range schema1.schemaMap {
+		result.addSchema(v)
+	}
+	for _, v := range schema2.schemaMap {
+		result.addSchema(v)
+	}
+	for i := range result.sortedTablesBuckets {
+		slice1 := schema1.sortedTablesBuckets[i]
+		slice2 := schema2.sortedTablesBuckets[i]
+		result.sortedTablesBuckets[i] = append(slice1, slice2...)
+	}
+	return result
+}

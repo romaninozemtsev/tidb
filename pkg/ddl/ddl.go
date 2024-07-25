@@ -873,7 +873,7 @@ func (d *ddl) Start(ctxPool *pools.ResourcePool) error {
 	metrics.DDLCounter.WithLabelValues(metrics.CreateDDLInstance).Inc()
 
 	// Start some background routine to manage TiFlash replica.
-	d.wg.Run(d.PollTiFlashRoutine)
+	// d.wg.Run(d.PollTiFlashRoutine)
 
 	ingestDataDir, err := ingest.GenIngestTempDataDir()
 	if err != nil {

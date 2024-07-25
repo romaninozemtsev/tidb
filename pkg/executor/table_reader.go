@@ -352,6 +352,10 @@ func (e *TableReaderExecutor) Close() error {
 	return err
 }
 
+// type currentTblNameKeyType struct{}
+
+// var currentTblNameKey = currentTblNameKeyType{}
+
 // buildResp first builds request and sends it to tikv using distsql.Select. It uses SelectResult returned by the callee
 // to fetch all results.
 func (e *TableReaderExecutor) buildResp(ctx context.Context, ranges []*ranger.Range) (distsql.SelectResult, error) {
@@ -413,6 +417,7 @@ func (e *TableReaderExecutor) buildResp(ctx context.Context, ranges []*ranger.Ra
 	})
 	e.kvRanges = kvReq.KeyRanges.AppendSelfTo(e.kvRanges)
 
+	ctx = context.WithValue(ctx, "__curTable", e.table.Meta().Name.L)
 	result, err := e.SelectResult(ctx, e.dctx, kvReq, exec.RetTypes(e), getPhysicalPlanIDs(e.plans), e.ID())
 	if err != nil {
 		return nil, err

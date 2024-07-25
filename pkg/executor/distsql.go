@@ -345,6 +345,8 @@ func (e *IndexReaderExecutor) open(ctx context.Context, kvRanges []kv.KeyRange) 
 		e.memTracker = memory.NewTracker(e.ID(), -1)
 	}
 	e.memTracker.AttachTo(e.Ctx().GetSessionVars().StmtCtx.MemTracker)
+	ctx = context.WithValue(ctx, "__curTable", e.table.Meta().Name.L)
+
 	slices.SortFunc(kvRanges, func(i, j kv.KeyRange) int {
 		return bytes.Compare(i.StartKey, j.StartKey)
 	})
@@ -719,6 +721,8 @@ func (e *IndexLookUpExecutor) startIndexWorker(ctx context.Context, workCh chan<
 				worker.syncErr(err)
 				break
 			}
+
+			ctx = context.WithValue(ctx, "__curTable", e.table.Meta().Name.L)
 			result, err := distsql.SelectWithRuntimeStats(ctx, e.Ctx().GetDistSQLCtx(), kvReq, tps, getPhysicalPlanIDs(e.idxPlans), idxID)
 			if err != nil {
 				worker.syncErr(err)
@@ -875,6 +879,7 @@ func (e *IndexLookUpExecutor) Next(ctx context.Context, req *chunk.Chunk) error 
 	}
 
 	if !e.workerStarted {
+		ctx = context.WithValue(ctx, "__curTable", e.table.Meta().Name.L)
 		if err := e.startWorkers(ctx, req.RequiredRows()); err != nil {
 			return err
 		}

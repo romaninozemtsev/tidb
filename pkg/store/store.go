@@ -16,18 +16,26 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pingcap/errors"
 	deadlockpb "github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/tidb/pkg/kv"
+	"github.com/pingcap/tidb/pkg/store/helper"
 	"github.com/pingcap/tidb/pkg/util"
 	"github.com/pingcap/tidb/pkg/util/logutil"
+	"github.com/pingcap/tidb/pkg/util/tracing"
 	"github.com/tikv/client-go/v2/oracle"
 	"github.com/tikv/client-go/v2/tikv"
+	"github.com/tikv/client-go/v2/tikvrpc"
+	"github.com/tikv/client-go/v2/txnkv/txnlock"
+	pd "github.com/tikv/pd/client"
+	pdhttp "github.com/tikv/pd/client/http"
 	"go.uber.org/zap"
 )
 
@@ -75,11 +83,32 @@ type MultiStorage struct {
 // // Implement the Storage interface for MultiStorage
 
 // Begin a global transaction.
+// (opts ...tikv.TxnOption) (Transaction, error)
 func (s *MultiStorage) Begin(opts ...tikv.TxnOption) (kv.Transaction, error) {
 	// Example: delegate to the first storage
 	var st kv.Storage = s.storages[0]
 	return st.Begin(opts...)
 }
+
+func (s *MultiStorage) GetStorages() []kv.Storage {
+	return s.storages
+}
+
+// type MultiSnapshot struct {
+// 	snapshots []kv.Snapshot
+// }
+
+// func (ms *MultiSnapshot) Iter(k kv.Key, upperBound kv.Key) (Iterator, error) {
+// 	var iterators []Iterator
+// 	for _, snapshot := range ms.snapshots {
+// 		iter, err := snapshot.Iter(k, upperBound)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		iterators = append(iterators, iter)
+// 	}
+// 	return NewMergedIterator(iterators), nil
+// }
 
 func (m *MultiStorage) GetSnapshot(ver kv.Version) kv.Snapshot {
 	// Example: delegate to the first storage
@@ -90,8 +119,11 @@ func (m *MultiStorage) GetClient() kv.Client {
 	// Example: delegate to the first storage
 	// TODO: we need to have smarter logic to choose the storage
 	// return some kind of a MultiClient
-	var st kv.Storage = m.storages[0]
-	var mc kv.Client = &MultiClient{clients: []kv.Client{st.GetClient()}}
+	var clients []kv.Client = []kv.Client{}
+	for _, storage := range m.storages {
+		clients = append(clients, storage.GetClient())
+	}
+	var mc kv.Client = &MultiClient{clients: clients}
 	return mc
 }
 
@@ -178,6 +210,80 @@ func (m *MultiStorage) GetCodec() tikv.Codec {
 	return m.storages[0].GetCodec()
 }
 
+// Closed returns a channel that indicates if the store is closed.
+func (m *MultiStorage) Closed() <-chan struct{} {
+	if store, ok := m.storages[0].(helper.Storage); ok {
+		return store.Closed()
+	}
+	return nil
+}
+
+func (m *MultiStorage) CurrentTimestamp(txnScope string) (uint64, error) {
+	if store, ok := m.storages[0].(helper.Storage); ok {
+		return store.CurrentTimestamp(txnScope)
+	}
+	return 0, errors.New("CurrentTimestamp not implemented")
+}
+
+func (m *MultiStorage) GetLockResolver() *txnlock.LockResolver {
+	if store, ok := m.storages[0].(helper.Storage); ok {
+		return store.GetLockResolver()
+	}
+	return nil
+}
+
+func (s *MultiStorage) GetRegionCache() *tikv.RegionCache {
+	if store, ok := s.storages[0].(helper.Storage); ok {
+		return store.GetRegionCache()
+	}
+	return nil
+}
+
+func (s *MultiStorage) GetSafePointKV() tikv.SafePointKV {
+	if store, ok := s.storages[0].(helper.Storage); ok {
+		return store.GetSafePointKV()
+	}
+	return nil
+}
+
+func (s *MultiStorage) GetTiKVClient() (client tikv.Client) {
+	if store, ok := s.storages[0].(helper.Storage); ok {
+		return store.GetTiKVClient()
+	}
+	return nil
+}
+
+func (s *MultiStorage) SendReq(
+	bo *tikv.Backoffer, req *tikvrpc.Request, regionID tikv.RegionVerID, timeout time.Duration,
+) (*tikvrpc.Response, error) {
+	if store, ok := s.storages[0].(helper.Storage); ok {
+		return store.SendReq(bo, req, regionID, timeout)
+	}
+	return nil, errors.New("SendReq not implemented")
+}
+
+func (s *MultiStorage) SetOracle(oracle oracle.Oracle) {
+	if store, ok := s.storages[0].(helper.Storage); ok {
+		store.SetOracle(oracle)
+	}
+}
+
+func (s *MultiStorage) SetTiKVClient(client tikv.Client) {
+	if store, ok := s.storages[0].(helper.Storage); ok {
+		store.SetTiKVClient(client)
+	}
+}
+
+func (s *MultiStorage) UpdateSPCache(cachedSP uint64, cachedTime time.Time) {
+	if store, ok := s.storages[0].(helper.Storage); ok {
+		store.UpdateSPCache(cachedSP, cachedTime)
+	}
+}
+
+// func (s *MultiStorage) Begin(opts ...tikv.TxnOption) (kv.Transaction, error) {
+
+// }
+
 func NewMultiStorage(paths []string) (kv.Storage, error) {
 	var storages []kv.Storage
 	for _, path := range paths {
@@ -187,7 +293,28 @@ func NewMultiStorage(paths []string) (kv.Storage, error) {
 		}
 		storages = append(storages, store)
 	}
-	return &MultiStorage{storages: storages}, nil
+	var ms = &MultiStorage{storages: storages}
+	return ms, nil
+}
+
+var _ helper.Storage = (*MultiStorage)(nil)
+
+// GetPDClient
+
+// GetPDClient returns the PD client.
+func (s *MultiStorage) GetPDClient() pd.Client {
+	if store, ok := s.storages[0].(kv.StorageWithPD); ok {
+		return store.GetPDClient()
+	}
+	return nil
+}
+
+// GetPDHTTPClient returns the PD HTTP client.
+func (s *MultiStorage) GetPDHTTPClient() pdhttp.Client {
+	if store, ok := s.storages[0].(kv.StorageWithPD); ok {
+		return store.GetPDHTTPClient()
+	}
+	return nil
 }
 
 // =====
@@ -207,14 +334,51 @@ type MultiClient struct {
 	clients []kv.Client
 }
 
+func (m *MultiClient) PickClient(ctx context.Context) (kv.Client, int) {
+	index := 0
+	normSqlKey := "__normalizedSQL"
+	if normalizedSQL, ok := ctx.Value(normSqlKey).(string); ok {
+		logutil.Logger(ctx).Info("==> normalized SQL from context", zap.String("normalizedSQL", normalizedSQL))
+		if strings.Contains(normalizedSQL, "table_from_db") {
+			logutil.Logger(ctx).Info("that was my favorite query")
+		}
+	}
+
+	sql2Key := "__SQL2"
+	if sql2, ok := ctx.Value(sql2Key).(string); ok {
+		logutil.Logger(ctx).Info("==> sql2 SQL from context", zap.String("sql2", sql2))
+		if strings.Contains(sql2, "table_from_db") {
+			logutil.Logger(ctx).Info("that was my favorite query2")
+		}
+	}
+
+	if currentTable, ok := ctx.Value("__curTable").(string); ok {
+		logutil.Logger(ctx).Info("==> current table from context", zap.String("table", currentTable))
+
+		if currentTable == "table_from_db2" {
+			logutil.Logger(ctx).Info("==> sending request to client 2")
+			index = 1
+		} else if currentTable == "table_from_db1" {
+			logutil.Logger(ctx).Info("==> sending request to client 1")
+			index = 0
+		}
+	}
+	return m.clients[index], index
+}
+
 func (m *MultiClient) Send(ctx context.Context, req *kv.Request, vars any, option *kv.ClientSendOption) kv.Response {
-	// Example: delegate to the first client
-	return m.clients[0].Send(ctx, req, vars, option)
+	cl, index := m.PickClient(ctx)
+	r, ctx := tracing.StartRegionEx(ctx, fmt.Sprintf("MultiClient.Send, index: %d", index))
+	defer r.End()
+	return cl.Send(ctx, req, vars, option)
 }
 
 func (m *MultiClient) IsRequestTypeSupported(reqType, subType int64) bool {
-	// Example: delegate to the first client
 	return m.clients[0].IsRequestTypeSupported(reqType, subType)
+}
+
+func (m *MultiClient) GetClients() []kv.Client {
+	return m.clients
 }
 
 func newStoreWithRetry(path string, maxRetries int) (kv.Storage, error) {
