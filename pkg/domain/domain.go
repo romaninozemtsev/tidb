@@ -317,9 +317,11 @@ func (do *Domain) loadInfoSchema(startTS uint64) (infoschema.InfoSchema, bool, i
 	// if do.store is instance of MultiStorage, then we'll take second store to fetch timestamp.
 
 	var m2 *meta.Meta
+	var ms *store.MultiStorage
 	if multiStore, ok := do.store.(*store.MultiStorage); ok {
 		storages := multiStore.GetStorages()
 		s2 := storages[1]
+		ms = multiStore
 		snapshot2 := s2.GetSnapshot(kv.NewVersion(startTS))
 		snapshot2.SetOption(kv.TiKVClientReadTimeout, uint64(3000)) // 3000ms.
 		m2 = meta.NewSnapshotMeta(snapshot2)
@@ -410,7 +412,7 @@ func (do *Domain) loadInfoSchema(startTS uint64) (infoschema.InfoSchema, bool, i
 	}
 
 	// if that doesn't work, we'll just do schemas := schemas1
-	schemas := combineDBInfos(schemas1, schemas2)
+	schemas := combineDBInfos(schemas1, schemas2, ms)
 
 	policies, err := do.fetchPolicies(m)
 	if err != nil {
@@ -655,24 +657,45 @@ func (*Domain) splitForConcurrentFetch(schemas []*model.DBInfo) [][]*model.DBInf
 	return splitted
 }
 
-func combineDBInfos(store1, store2 []*model.DBInfo) []*model.DBInfo {
-	nameMap := make(map[string]bool)
-	store3 := make([]*model.DBInfo, 0)
+func combineDBInfos(store1, store2 []*model.DBInfo, ms *store.MultiStorage) []*model.DBInfo {
+	nameMap := make(map[string]*model.DBInfo)
+	dbIDMap := make(map[int64]int)
+	dbNameToIDMap := make(map[string]int64)
 
 	// Add all elements from store1 to store3 and populate the nameMap
 	for _, dbInfo := range store1 {
-		store3 = append(store3, dbInfo)
-		nameMap[dbInfo.Name.L] = true
+		nameMap[dbInfo.Name.L] = dbInfo
+		dbIDMap[dbInfo.ID] = 0 // 0 means the dbInfo is from store1
+		dbNameToIDMap[dbInfo.Name.L] = dbInfo.ID
 	}
 
 	// Add elements from store2 to store3 only if the name is not in nameMap
 	for _, dbInfo := range store2 {
-		if !nameMap[dbInfo.Name.L] {
-			store3 = append(store3, dbInfo)
+		if existing, ok := nameMap[dbInfo.Name.L]; ok {
+			// for some reason, some dbs are propagated to both stores, but with empty tables into wrong one.
+			if len(existing.Tables) == 0 && len(dbInfo.Tables) > 0 {
+				// If the existing dbInfo is empty, we should replace it with the new one.
+				nameMap[dbInfo.Name.L] = dbInfo
+				dbIDMap[dbInfo.ID] = 1 // 1 means the dbInfo is from store2
+				dbNameToIDMap[dbInfo.Name.L] = dbInfo.ID
+			}
+		} else {
+			nameMap[dbInfo.Name.L] = dbInfo
+			dbIDMap[dbInfo.ID] = 1 // 1 means the dbInfo is from store2
+			dbNameToIDMap[dbInfo.Name.L] = dbInfo.ID
 		}
 	}
 
-	return store3
+	if ms != nil {
+		ms.SetStoreMapping(dbIDMap)
+		ms.SetDbNameMapping(dbNameToIDMap)
+	}
+
+	var combined []*model.DBInfo
+	for _, value := range nameMap {
+		combined = append(combined, value)
+	}
+	return combined
 }
 
 func (*Domain) fetchSchemasWithTables(schemas []*model.DBInfo, m *meta.Meta, done chan error) {

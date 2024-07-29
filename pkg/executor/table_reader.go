@@ -418,6 +418,7 @@ func (e *TableReaderExecutor) buildResp(ctx context.Context, ranges []*ranger.Ra
 	e.kvRanges = kvReq.KeyRanges.AppendSelfTo(e.kvRanges)
 
 	ctx = context.WithValue(ctx, "__curTable", e.table.Meta().Name.L)
+	ctx = context.WithValue(ctx, "__curDB", e.table.Meta().DBID)
 	result, err := e.SelectResult(ctx, e.dctx, kvReq, exec.RetTypes(e), getPhysicalPlanIDs(e.plans), e.ID())
 	if err != nil {
 		return nil, err

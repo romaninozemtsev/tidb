@@ -61,6 +61,7 @@ import (
 	"github.com/pingcap/tidb/pkg/sessionctx/binloginfo"
 	"github.com/pingcap/tidb/pkg/sessionctx/sessionstates"
 	"github.com/pingcap/tidb/pkg/sessionctx/variable"
+	"github.com/pingcap/tidb/pkg/store"
 	"github.com/pingcap/tidb/pkg/store/helper"
 	"github.com/pingcap/tidb/pkg/table"
 	"github.com/pingcap/tidb/pkg/table/tables"
@@ -77,12 +78,14 @@ import (
 	"github.com/pingcap/tidb/pkg/util/format"
 	"github.com/pingcap/tidb/pkg/util/hack"
 	"github.com/pingcap/tidb/pkg/util/hint"
+	"github.com/pingcap/tidb/pkg/util/logutil"
 	"github.com/pingcap/tidb/pkg/util/memory"
 	"github.com/pingcap/tidb/pkg/util/sem"
 	"github.com/pingcap/tidb/pkg/util/set"
 	"github.com/pingcap/tidb/pkg/util/sqlexec"
 	"github.com/pingcap/tidb/pkg/util/stringutil"
 	"github.com/tikv/client-go/v2/oracle"
+	"go.uber.org/zap"
 )
 
 var etcdDialTimeout = 5 * time.Second
@@ -2016,12 +2019,28 @@ func (e *ShowExec) appendRow(row []any) {
 }
 
 func (e *ShowExec) fetchShowTableRegions(ctx context.Context) error {
-	store := e.Ctx().GetStore()
-	tikvStore, ok := store.(helper.Storage)
+	s := e.Ctx().GetStore()
+	tikvStore, ok := s.(helper.Storage)
 	if !ok {
 		return nil
 	}
-	splitStore, ok := store.(kv.SplittableStore)
+
+	// TODO: see if we can support it generically in the multistorage or regioncache.
+	if multistore, ok := s.(*store.MultiStorage); ok {
+		innerStore, err := multistore.GetStoreByDbName(e.DBName.O)
+		if err != nil {
+			logutil.BgLogger().Error("Could not find DB name in a store", zap.String("dbName", e.DBName.O))
+			return nil
+		}
+		s = innerStore
+
+		innerKvStore, ok := innerStore.(helper.Storage)
+		if ok {
+			tikvStore = innerKvStore
+		}
+	}
+
+	splitStore, ok := s.(kv.SplittableStore)
 	if !ok {
 		return nil
 	}

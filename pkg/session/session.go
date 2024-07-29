@@ -3988,11 +3988,12 @@ func GetStartTSFromSession(se any) (startTS, processInfoID uint64) {
 func logStmt(execStmt *executor.ExecStmt, s *session) {
 	vars := s.GetSessionVars()
 	isCrucial := false
-	var rawSql = execStmt.OriginText()
+	// TODO: disabling for laod testing.
+	//var rawSql = execStmt.OriginText()
 	//if (strings.Contains("tidb_background_subtask", rawSql) || strings.Contains("tidb_background_subtask_history", rawSql)) && !vars.InRestrictedSQL {
-	if !vars.InRestrictedSQL {
-		logutil.BgLogger().Info("exec statement", zap.String("sql", rawSql))
-	}
+	// if !vars.InRestrictedSQL {
+	// 	logutil.BgLogger().Info("exec statement", zap.String("sql", rawSql))
+	// }
 	switch stmt := execStmt.StmtNode.(type) {
 	case *ast.DropIndexStmt:
 		isCrucial = true
@@ -4006,7 +4007,7 @@ func logStmt(execStmt *executor.ExecStmt, s *session) {
 		}
 	case *ast.SelectStmt:
 		if vars.User != nil {
-			isCrucial = true
+			// isCrucial = true
 		}
 	case *ast.CreateUserStmt, *ast.DropUserStmt, *ast.AlterUserStmt, *ast.SetPwdStmt, *ast.GrantStmt,
 		*ast.RevokeStmt, *ast.AlterTableStmt, *ast.CreateDatabaseStmt, *ast.CreateTableStmt,

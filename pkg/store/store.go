@@ -73,7 +73,9 @@ func New(path string) (kv.Storage, error) {
 
 // Define your wrapped storage type
 type MultiStorage struct {
-	storages []kv.Storage
+	storages      []kv.Storage
+	storeMapping  map[int64]int
+	dbNameMapping map[string]int64
 }
 
 // func NewMultiStorage(storages ...tikvStore) *MultiStorage {
@@ -90,8 +92,30 @@ func (s *MultiStorage) Begin(opts ...tikv.TxnOption) (kv.Transaction, error) {
 	return st.Begin(opts...)
 }
 
-func (s *MultiStorage) GetStorages() []kv.Storage {
-	return s.storages
+func (ms *MultiStorage) GetStoreByDbName(dbName string) (kv.Storage, error) {
+	if dbId, ok := ms.dbNameMapping[dbName]; ok {
+		if storeIndex, ok := ms.storeMapping[dbId]; ok {
+			return ms.storages[storeIndex], nil
+		}
+	}
+	return nil, errors.New("store not found")
+}
+
+// SetStoreMapping sets the storeMapping for the MultiStorage instance
+func (ms *MultiStorage) SetStoreMapping(mapping map[int64]int) {
+	ms.storeMapping = mapping
+}
+
+func (ms *MultiStorage) SetDbNameMapping(mapping map[string]int64) {
+	ms.dbNameMapping = mapping
+}
+
+func (ms *MultiStorage) GetDbNameMapping() map[string]int64 {
+	return ms.dbNameMapping
+}
+
+func (ms *MultiStorage) GetStorages() []kv.Storage {
+	return ms.storages
 }
 
 // type MultiSnapshot struct {
@@ -123,7 +147,11 @@ func (m *MultiStorage) GetClient() kv.Client {
 	for _, storage := range m.storages {
 		clients = append(clients, storage.GetClient())
 	}
-	var mc kv.Client = &MultiClient{clients: clients}
+	var mc kv.Client = &MultiClient{
+		clients:       clients,
+		storeMapping:  m.storeMapping,
+		dbNameMapping: m.dbNameMapping,
+	}
 	return mc
 }
 
@@ -331,38 +359,50 @@ func (s *MultiStorage) GetPDHTTPClient() pdhttp.Client {
 // }
 
 type MultiClient struct {
-	clients []kv.Client
+	clients       []kv.Client
+	storeMapping  map[int64]int
+	dbNameMapping map[string]int64
 }
 
 func (m *MultiClient) PickClient(ctx context.Context) (kv.Client, int) {
 	index := 0
-	normSqlKey := "__normalizedSQL"
-	if normalizedSQL, ok := ctx.Value(normSqlKey).(string); ok {
-		logutil.Logger(ctx).Info("==> normalized SQL from context", zap.String("normalizedSQL", normalizedSQL))
-		if strings.Contains(normalizedSQL, "table_from_db") {
-			logutil.Logger(ctx).Info("that was my favorite query")
+	// normSqlKey := "__normalizedSQL"
+	// if normalizedSQL, ok := ctx.Value(normSqlKey).(string); ok {
+	// 	//logutil.Logger(ctx).Info("==> normalized SQL from context", zap.String("normalizedSQL", normalizedSQL))
+	// 	if strings.Contains(normalizedSQL, "table_from_db") {
+	// 		logutil.Logger(ctx).Info("that was my favorite query")
+	// 	}
+	// }
+
+	// sql2Key := "__SQL2"
+	// if sql2, ok := ctx.Value(sql2Key).(string); ok {
+	// 	//logutil.Logger(ctx).Info("==> sql2 SQL from context", zap.String("sql2", sql2))
+	// 	if strings.Contains(sql2, "table_from_db") {
+	// 		logutil.Logger(ctx).Info("that was my favorite query2")
+	// 	}
+	// }
+
+	// if currentTable, ok := ctx.Value("__curTable").(string); ok {
+	// 	//logutil.Logger(ctx).Info("==> current table from context", zap.String("table", currentTable))
+
+	// 	if currentTable == "table_from_db2" {
+	// 		logutil.Logger(ctx).Info("==> sending request to client 2")
+	// 		index = 1
+	// 	} else if currentTable == "table_from_db1" {
+	// 		logutil.Logger(ctx).Info("==> sending request to client 1")
+	// 		index = 0
+	// 	}
+	// }
+
+	if curDB, ok := ctx.Value("__curDB").(int64); ok {
+		//logutil.Logger(ctx).Info("==> current DB from context", zap.Int64("db", curDB))
+
+		if storedIndex, ok := m.storeMapping[curDB]; ok {
+			// logutil.Logger(ctx).Info("==> got DB from context", zap.Int("index", storedIndex))
+			index = storedIndex
 		}
 	}
 
-	sql2Key := "__SQL2"
-	if sql2, ok := ctx.Value(sql2Key).(string); ok {
-		logutil.Logger(ctx).Info("==> sql2 SQL from context", zap.String("sql2", sql2))
-		if strings.Contains(sql2, "table_from_db") {
-			logutil.Logger(ctx).Info("that was my favorite query2")
-		}
-	}
-
-	if currentTable, ok := ctx.Value("__curTable").(string); ok {
-		logutil.Logger(ctx).Info("==> current table from context", zap.String("table", currentTable))
-
-		if currentTable == "table_from_db2" {
-			logutil.Logger(ctx).Info("==> sending request to client 2")
-			index = 1
-		} else if currentTable == "table_from_db1" {
-			logutil.Logger(ctx).Info("==> sending request to client 1")
-			index = 0
-		}
-	}
 	return m.clients[index], index
 }
 
@@ -380,6 +420,18 @@ func (m *MultiClient) IsRequestTypeSupported(reqType, subType int64) bool {
 func (m *MultiClient) GetClients() []kv.Client {
 	return m.clients
 }
+
+// // ========== Multi Region Cache ==========
+
+// type MultiRegionCache struct {
+// 	caches []*tikv.RegionCache
+// }
+
+// func (mc *MultiRegionCache) Close() {
+// 	for _, cache := range mc.caches {
+// 		cache.Close()
+// 	}
+// }
 
 func newStoreWithRetry(path string, maxRetries int) (kv.Storage, error) {
 	storeURL, err := url.Parse(path)

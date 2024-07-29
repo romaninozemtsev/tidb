@@ -92,19 +92,6 @@ func Select(ctx context.Context, dctx *distsqlctx.DistSQLContext, kvReq *kv.Requ
 		option.AppendWarning = dctx.AppendWarning
 	}
 
-	// cl := dctx.Client
-	// //if dctx.Client
-
-	// if currentTable, ok := ctx.Value("__curTable").(string); ok {
-	// 	logutil.Logger(ctx).Info("==> current table from context", zap.String("table", currentTable))
-	// }
-
-	// if multiClient, ok := dctx.Client.(*store.MultiClient); ok {
-	// 	if strings.Contains(originalSQL, "table_from_db2") {
-	// 		cl = multiClient.GetClients()[1]
-	// 	}
-	// }
-
 	resp := dctx.Client.Send(ctx, kvReq, dctx.KVVars, option)
 	if resp == nil {
 		return nil, errors.New("client returns nil response")
