@@ -16,13 +16,13 @@
 # production environment, please refer to https://github.com/PingCAP-QE/artifacts/blob/main/dockerfiles/cd/builders/tidb/Dockerfile.
 
 # Builder image
-FROM golang:1.21 as builder
+FROM golang:1.21 AS builder
 WORKDIR /tidb
 
 COPY . .
 
 ARG GOPROXY
-ENV GOPROXY ${GOPROXY}
+ENV GOPROXY=${GOPROXY}
 
 RUN make server
 

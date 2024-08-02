@@ -411,7 +411,7 @@ func createStoreAndDomain(keyspaceName string) (kv.Storage, *domain.Domain) {
 	} else {
 		fullPath = fmt.Sprintf("%s://%s?keyspaceName=%s", cfg.Store, cfg.Path, keyspaceName)
 	}
-	var fullPath2 string = "tikv://127.0.0.1:3451?disableGC=true"
+	var fullPath2 string = fmt.Sprintf("%s://%s", cfg.Store, cfg.Path2) //  "tikv://127.0.0.1:3451"
 	var paths = []string{fullPath, fullPath2}
 
 	var err error

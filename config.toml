@@ -1,5 +1,7 @@
 # TiDB server port.
 port = 4001
+host = "0.0.0.0"
+
 
 store = "tikv"
 
@@ -7,14 +9,17 @@ store = "tikv"
 # path = "127.0.0.1:2379,127.0.0.1:2382"
 
 # trying to add 2 unrelated PDs
-path = "127.0.0.1:2379?disableGC=true"
+# path = "127.0.0.1:2379?disableGC=true"
 
+path = "pd1:2379?disableGC=true"
+path2 = "pd4:2379?disableGC=true"
 #127.0.0.1:3451
 
 #path = "127.0.0.1:1233"
 
 #path = "pd.dev-1.pd-runner.ei4.atd.disco.linkedin.com:19165"
 [status]
+status-host = "0.0.0.0"
 status-port = 10081
 
 [log]

@@ -179,6 +179,7 @@ type Config struct {
 	Cors             string `toml:"cors" json:"cors"`
 	Store            string `toml:"store" json:"store"`
 	Path             string `toml:"path" json:"path"`
+	Path2            string `toml:"path2" json:"path2"`
 	Socket           string `toml:"socket" json:"socket"`
 	Lease            string `toml:"lease" json:"lease"`
 	SplitTable       bool   `toml:"split-table" json:"split-table"`
