@@ -248,7 +248,9 @@ func (m *MultiStorage) Closed() <-chan struct{} {
 
 func (m *MultiStorage) CurrentTimestamp(txnScope string) (uint64, error) {
 	if store, ok := m.storages[0].(helper.Storage); ok {
-		return store.CurrentTimestamp(txnScope)
+		ts, err := store.CurrentTimestamp(txnScope)
+		logutil.BgLogger().Info("==> CurrentTimestamp ", zap.Uint64("ts", ts), zap.Error(err))
+		return ts, err
 	}
 	return 0, errors.New("CurrentTimestamp not implemented")
 }

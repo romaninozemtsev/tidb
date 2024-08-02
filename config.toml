@@ -1,7 +1,6 @@
 # TiDB server port.
 port = 4001
 
-
 store = "tikv"
 
 # against local TIUP
